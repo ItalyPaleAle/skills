@@ -50,7 +50,7 @@ Use this skill when you need to:
 | Layer | Tool | Package |
 |---|---|---|
 | Build tool | Vite | `vite` |
-| UI framework | React 19 + TypeScript | `react`, `react-dom`, `@types/react`, `@types/react-dom` |
+| UI framework | React + TypeScript | `react`, `react-dom`, `@types/react`, `@types/react-dom` |
 | JSX/TS compiler | SWC (via Vite plugin) | `@vitejs/plugin-react-swc` |
 | Styling | Tailwind CSS v4 (Vite plugin) | `tailwindcss`, `@tailwindcss/vite` |
 | PWA | vite-plugin-pwa | `vite-plugin-pwa` |
