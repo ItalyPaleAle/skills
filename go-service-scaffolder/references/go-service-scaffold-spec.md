@@ -108,10 +108,10 @@ import (
 	"github.com/italypaleale/go-kit/signals"
 	slogkit "github.com/italypaleale/go-kit/slog"
 
-	"{{MODULE_PATH}}/pkg/buildinfo"
-	"{{MODULE_PATH}}/pkg/config"
-	appmetrics "{{MODULE_PATH}}/pkg/metrics"
-	"{{MODULE_PATH}}/pkg/server"
+	"github.com/italypaleale/sample-app/pkg/buildinfo"
+	"github.com/italypaleale/sample-app/pkg/config"
+	appmetrics "github.com/italypaleale/sample-app/pkg/metrics"
+	"github.com/italypaleale/sample-app/pkg/server"
 )
 
 func main() {
@@ -123,8 +123,8 @@ func main() {
 	// Load config
 	cfg := config.Get()
 	err := configkit.LoadConfig(cfg, configkit.LoadConfigOpts{
-		EnvVar:  "{{CONFIG_ENV_VAR}}",
-		DirName: "{{APP_NAME}}",
+		EnvVar:  "SAMPLEAPP_CONFIG",
+		DirName: "sample-app",
 	})
 	if err != nil {
 		var ce *configkit.ConfigError
@@ -137,10 +137,11 @@ func main() {
 	}
 
 	// List of services to run
-	services := make([]servicerunner.Service, 0)
+	services := make([]servicerunner.Service, 0, 3)
 
-	// Shutdown functions
-	shutdownFns := make([]servicerunner.Service, 0)
+	shutdowns := &shutdownManager{
+		fns: make([]servicerunner.Service, 0, 3),
+	}
 
 	// Get the logger and set it in the context
 	log, loggerShutdownFn, err := observability.InitLogs(context.Background(), observability.InitLogsOpts{
@@ -155,31 +156,29 @@ func main() {
 		return
 	}
 	slog.SetDefault(log)
-	if loggerShutdownFn != nil {
-		shutdownFns = append(shutdownFns, loggerShutdownFn)
-	}
+	shutdowns.Add(loggerShutdownFn)
 
 	// Validate the configuration
 	err = cfg.Validate(log)
 	if err != nil {
+		shutdowns.Run(log)
 		slogkit.FatalError(log, "Invalid configuration", err)
 		return
 	}
 
-	log.Info("Starting {{APP_NAME}}", slog.String("build", buildinfo.BuildDescription))
+	log.Info("Starting sample-app", slog.String("build", buildinfo.BuildDescription))
 
-	// Get a context that is canceled when the application receives a termination signal
+	// Get a context that is canceled when the application receives a termination signal.
 	ctx := signals.SignalContext(context.Background())
 
 	// Init appMetrics
 	appMetrics, metricsShutdownFn, err := appmetrics.NewAppMetrics(ctx)
 	if err != nil {
+		shutdowns.Run(log)
 		slogkit.FatalError(log, "Failed to init metrics", err)
 		return
 	}
-	if metricsShutdownFn != nil {
-		shutdownFns = append(shutdownFns, metricsShutdownFn)
-	}
+	shutdowns.Add(metricsShutdownFn)
 
 	// Init tracing
 	traceProvider, tracerShutdownFn, err := observability.InitTraces(ctx, observability.InitTracesOpts{
@@ -187,12 +186,11 @@ func main() {
 		AppName: buildinfo.AppName,
 	})
 	if err != nil {
+		shutdowns.Run(log)
 		slogkit.FatalError(log, "Failed to init tracing", err)
 		return
 	}
-	if tracerShutdownFn != nil {
-		shutdownFns = append(shutdownFns, tracerShutdownFn)
-	}
+	shutdowns.Add(tracerShutdownFn)
 
 	// Create HTTP server
 	log.Info("Initializing API server")
@@ -201,6 +199,7 @@ func main() {
 		TraceProvider: traceProvider,
 	})
 	if err != nil {
+		shutdowns.Run(log)
 		slogkit.FatalError(log, "Failed to init API server", err)
 		return
 	}
@@ -212,16 +211,30 @@ func main() {
 		NewServiceRunner(services...).
 		Run(ctx)
 	if err != nil {
+		shutdowns.Run(log)
 		slogkit.FatalError(log, "Failed to run service", err)
 		return
 	}
 
-	// Invoke all shutdown functions
-	// We give these a timeout of 5s
+	shutdowns.Run(log)
+}
+
+type shutdownManager struct {
+	fns []servicerunner.Service
+}
+
+func (s *shutdownManager) Add(fn servicerunner.Service) {
+	if fn == nil {
+		return
+	}
+	s.fns = append(s.fns, fn)
+}
+
+func (s *shutdownManager) Run(log *slog.Logger) {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	err = servicerunner.
-		NewServiceRunner(shutdownFns...).
+	err := servicerunner.
+		NewServiceRunner(s.fns...).
 		Run(shutdownCtx)
 	if err != nil {
 		log.Error("Error shutting down services", slog.Any("error", err))
@@ -521,11 +534,11 @@ import (
 	api "go.opentelemetry.io/otel/metric"
 
 	"github.com/italypaleale/go-kit/observability"
-	"{{MODULE_PATH}}/pkg/buildinfo"
-	"{{MODULE_PATH}}/pkg/config"
+	"github.com/italypaleale/sample-app/pkg/buildinfo"
+	"github.com/italypaleale/sample-app/pkg/config"
 )
 
-const prefix = "{{METRICS_PREFIX}}"
+const prefix = "sample"
 
 type AppMetrics struct {
 	apiCall api.Int64Counter
@@ -547,7 +560,7 @@ func NewAppMetrics(ctx context.Context) (m *AppMetrics, shutdownFn func(ctx cont
 
 	m.apiCall, err = meter.Int64Counter(
 		prefix+"_api_calls",
-		api.WithDescription("The number of API calls"),
+		api.WithDescription("The number of API calls (example)"),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create "+prefix+"_api_calls meter: %w", err)
@@ -556,14 +569,16 @@ func NewAppMetrics(ctx context.Context) (m *AppMetrics, shutdownFn func(ctx cont
 	return m, shutdownFn, nil
 }
 
-//nolint:contextcheck
-func (m *AppMetrics) RecordAPICall(method string) {
+func (m *AppMetrics) RecordAPICall(ctx context.Context, method string) {
 	if m == nil {
 		return
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 
 	m.apiCall.Add(
-		context.Background(),
+		ctx,
 		1,
 		api.WithAttributeSet(
 			attribute.NewSet(
@@ -597,20 +612,19 @@ import (
 
 	httpserver "github.com/italypaleale/go-kit/httpserver"
 	tlsconfig "github.com/italypaleale/go-kit/httpserver/tlsconfig"
-	slogkit "github.com/italypaleale/go-kit/slog"
 	sloghttp "github.com/samber/slog-http"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/sdk/trace"
 
-	"{{MODULE_PATH}}/pkg/config"
-	"{{MODULE_PATH}}/pkg/metrics"
+	"github.com/italypaleale/sample-app/pkg/config"
+	"github.com/italypaleale/sample-app/pkg/metrics"
 )
 
 // Max size for request bodies
 // 1MB
 const maxBodySize = 1 << 20
 
-// Server is the HTTP(S) server.
+// Server is the server based on Gin
 type Server struct {
 	appSrv  *http.Server
 	handler http.Handler
@@ -737,7 +751,8 @@ func (s *Server) Run(ctx context.Context) error {
 
 	// App server
 	s.wg.Add(1)
-	err := s.startAppServer(ctx)
+	appSrvErrCh := make(chan error, 1)
+	err := s.startAppServer(ctx, appSrvErrCh)
 	if err != nil {
 		return fmt.Errorf("failed to start app server: %w", err)
 	}
@@ -764,14 +779,18 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}
 
-	// Block until the context is canceled
-	<-ctx.Done()
+	// Block until the context is canceled or the app server exits unexpectedly.
+	select {
+	case <-ctx.Done():
+	case err = <-appSrvErrCh:
+		return fmt.Errorf("app server failed: %w", err)
+	}
 
 	// Servers are stopped with deferred calls
 	return nil
 }
 
-func (s *Server) startAppServer(ctx context.Context) error {
+func (s *Server) startAppServer(ctx context.Context, appSrvErrCh chan<- error) error {
 	cfg := config.Get()
 
 	// Create the HTTP(S) server
@@ -818,7 +837,10 @@ func (s *Server) startAppServer(ctx context.Context) error {
 			srvErr = s.appSrv.Serve(s.appListener)
 		}
 		if !errors.Is(srvErr, http.ErrServerClosed) {
-			slogkit.FatalError(slog.Default(), "Error starting app server", srvErr)
+			select {
+			case appSrvErrCh <- srvErr:
+			default:
+			}
 		}
 	}()
 
