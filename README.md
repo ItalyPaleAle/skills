@@ -9,6 +9,7 @@ Custom [Skills](https://docs.claude.com/en/docs/claude-ai/projects#skills) for A
 | [react-spa-vite](./react-spa-vite/) | Scaffold and build production-ready static SPAs with Vite, React, Tailwind CSS v4, PWA support, SRI, and image optimization | Web Development |
 | [biome-lint-format](./biome-lint-format/) | Set up Biome for fast linting and formatting in JavaScript/TypeScript projects | Tooling |
 | [go-service-scaffolder](./go-service-scaffolder/) | Scaffold a production-ready Go HTTP service with OpenTelemetry observability, TLS, lifecycle management, Dockerfile, GitHub Actions CI/CD, and golangci-lint | Backend Development |
+| [go-package-skill-creator](./go-package-skill-creator/) | Create skills for Go packages by fetching documentation from pkg.go.dev and generating structured SKILL.md files with usage patterns, examples, and best practices | Skill Development |
 
 ## Usage
 
