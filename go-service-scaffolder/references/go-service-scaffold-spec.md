@@ -48,6 +48,8 @@ Generate all the files listed below. The directory structure is:
 │       └── build-and-publish.yaml
 ├── .gitignore
 ├── .golangci.yaml
+├── .gomod-age.json
+├── AGENTS.md
 ├── cmd/
 │   └── main.go
 ├── pkg/
@@ -69,7 +71,7 @@ Generate all the files listed below. The directory structure is:
 └── Makefile
 ```
 
-After generating files, run `go mod init <module-path>` and `go mod tidy` to create `go.mod` and `go.sum`, then run `git init` only if the target is not already a git repository.
+After generating files, run `go mod init <module-path>` and `go mod tidy` to create `go.mod` and `go.sum`, register the `gen-config` tool with `go get -tool github.com/italypaleale/go-kit/tools/gen-config`, then run `make gen-config` (this produces `config.md` and `config.sample.yaml` from the `Config` struct annotations — do not author them by hand). Finally, run `git init` only if the target is not already a git repository.
 
 ---
 
@@ -127,8 +129,8 @@ func main() {
 		DirName: "sample-app",
 	})
 	if err != nil {
-		var ce *configkit.ConfigError
-		if errors.As(err, &ce) {
+		ce, ok := errors.AsType[*configkit.ConfigError](err)
+		if ok {
 			ce.LogFatal(initLogger)
 		} else {
 			slogkit.FatalError(initLogger, "Failed to load configuration", err)
@@ -569,12 +571,15 @@ func NewAppMetrics(ctx context.Context) (m *AppMetrics, shutdownFn func(ctx cont
 	return m, shutdownFn, nil
 }
 
+//nolint:contextcheck
 func (m *AppMetrics) RecordAPICall(ctx context.Context, method string) {
 	if m == nil {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	} else {
+		ctx = context.WithoutCancel(ctx)
 	}
 
 	m.apiCall.Add(
@@ -756,10 +761,10 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to start app server: %w", err)
 	}
-	defer func() { //nolint:contextcheck
+	defer func() {
 		// Handle graceful shutdown
 		defer s.wg.Done()
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		err := s.appSrv.Shutdown(shutdownCtx)
 		shutdownCancel()
 		if err != nil {
@@ -826,7 +831,7 @@ func (s *Server) startAppServer(ctx context.Context, appSrvErrCh chan<- error) e
 	}
 
 	// Start the HTTP(S) server in a background goroutine
-	go func() { //nolint:contextcheck
+	go func() {
 		defer s.appListener.Close() //nolint:errcheck
 
 		// Next call blocks until the server is shut down
@@ -912,6 +917,7 @@ FROM gcr.io/distroless/static-debian12:nonroot
 # TARGETARCH is set automatically when using BuildKit
 ARG TARGETARCH
 COPY .bin/linux-${TARGETARCH}/{{APP_NAME}} /bin
+ENTRYPOINT [ "/bin/{{APP_NAME}}" ]
 CMD ["/bin/{{APP_NAME}}"]
 ```
 
@@ -931,6 +937,15 @@ test-race:
 .PHONY: lint
 lint:
 	golangci-lint run -c .golangci.yaml
+
+.PHONY: gen-config
+gen-config:
+	go tool gen-config
+
+# Ensure gen-config ran
+.PHONY: check-config-diff
+check-config-diff: gen-config
+	git diff --exit-code config.sample.yaml config.md
 ```
 
 ---
@@ -1015,7 +1030,8 @@ jobs:
     permissions:
       contents: read
     env:
-      GOLANGCI_LINT_VERSION: "v2.9.0"
+      CGO_ENABLED: "0"
+      GOLANGCI_LINT_VERSION: "v2.11.4"
     steps:
 
       - name: Check out code
@@ -1026,10 +1042,20 @@ jobs:
         with:
           go-version-file: 'go.mod'
 
+      - name: Check Go dependency minimum age
+        run: |
+          go install github.com/fchimpan/gomod-age@09005169a4792ad1a4824e1fc6d85785d91cea36
+          gomod-age
+
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v9
         with:
           version: ${{ env.GOLANGCI_LINT_VERSION }}
+
+      - name: Check diff
+        run: |
+          echo "If this fails, please run 'make gen-config' to fix"
+          make check-config-diff
 
       - name: Test
         run: |
@@ -1072,7 +1098,7 @@ jobs:
           cache: true
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       # Lowercase REPO_OWNER which is required for containers
       - name: Set lowercase REPO_OWNER
@@ -1082,7 +1108,7 @@ jobs:
 
       - name: Generate container tags and labels
         id: meta
-        uses: docker/metadata-action@v5
+        uses: docker/metadata-action@v6
         with:
           images: ghcr.io/${{ env.REPO_OWNER }}/{{APP_NAME}}
           # generate semver tags and 'latest' tag
@@ -1117,7 +1143,7 @@ jobs:
           echo "BUILD_LDFLAGS: '$BUILD_LDFLAGS'"
 
       - name: Login to container registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -1228,7 +1254,7 @@ jobs:
           ls -al .out
 
       - name: Publish binaries as Actions Artifacts
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: artifacts
           path: .out
@@ -1236,7 +1262,7 @@ jobs:
           compression-level: 0
 
       - name: Build and push Container images
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         id: docker-build-push
         with:
           tags: ${{ steps.meta.outputs.tags }}
@@ -1247,7 +1273,7 @@ jobs:
           push: true
 
       - name: Binary attestation linux-amd64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: linux-amd64/{{APP_NAME}}
@@ -1255,7 +1281,7 @@ jobs:
             .bin/{{APP_NAME}}-*-linux-amd64/{{APP_NAME}}
 
       - name: Binary attestation linux-arm64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: linux-arm64/{{APP_NAME}}
@@ -1263,7 +1289,7 @@ jobs:
             .bin/{{APP_NAME}}-*-linux-arm64/{{APP_NAME}}
 
       - name: Binary attestation linux-armv7
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: linux-armv7/{{APP_NAME}}
@@ -1271,7 +1297,7 @@ jobs:
             .bin/{{APP_NAME}}-*-linux-armv7/{{APP_NAME}}
 
       - name: Binary attestation windows-x64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: windows-x64/{{APP_NAME}}
@@ -1279,7 +1305,7 @@ jobs:
             .bin/{{APP_NAME}}-*-windows-x64/{{APP_NAME}}.exe
 
       - name: Binary attestation windows-arm64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: windows-arm64/{{APP_NAME}}
@@ -1287,7 +1313,7 @@ jobs:
             .bin/{{APP_NAME}}-*-windows-arm64/{{APP_NAME}}.exe
 
       - name: Binary attestation freebsd-amd64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: freebsd-amd64/{{APP_NAME}}
@@ -1295,7 +1321,7 @@ jobs:
             .bin/{{APP_NAME}}-*-freebsd-amd64/{{APP_NAME}}
 
       - name: Binary attestation freebsd-arm64
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: freebsd-arm64/{{APP_NAME}}
@@ -1303,7 +1329,7 @@ jobs:
             .bin/{{APP_NAME}}-*-freebsd-arm64/{{APP_NAME}}
 
       - name: Container image attestation
-        uses: actions/attest-build-provenance@v1
+        uses: actions/attest-build-provenance@v4
         if: startsWith(github.ref, 'refs/tags/v')
         with:
           subject-name: 'ghcr.io/${{ env.REPO_OWNER }}/{{APP_NAME}}'
@@ -1319,7 +1345,7 @@ jobs:
 
 Generate `.gitignore` from:
 
-`https://www.toptal.com/developers/gitignore/api/linux,macos,windows,go,visualstudiocode`
+`https://www.toptal.com/developers/gitignore/api/linux,macos,windows,visualstudiocode,go`
 
 Then add the project-specific entries at the top:
 
@@ -1332,16 +1358,107 @@ Then add the project-specific entries at the top:
 
 ---
 
+### `.gomod-age.json`
+
+Configures [`gomod-age`](https://github.com/fchimpan/gomod-age), used by CI to ensure no dependency is younger than the configured threshold. Ignore the project's own modules and the Go subrepositories.
+
+```json
+{
+  "age": "7d",
+  "ignore": [
+    "github.com/italypaleale/*",
+    "golang.org/x/*"
+  ]
+}
+```
+
+---
+
+### `AGENTS.md`
+
+Coding-style guardrails for assistants working on the repo. Generate verbatim (this file is not parameterized). The outer code block below uses four backticks so the embedded Go fences (three backticks) render correctly — in the written file, use normal triple-backtick fences.
+
+````markdown
+# Coding Style Guidelines
+
+## Go
+
+Never define variables inside `if` conditions. Always declare variables on a separate line before the conditional check.
+
+```go
+// Wrong
+if err := something(); err != nil { ... }
+
+// Wrong
+if val, ok := something.(string); ok { ... }
+
+// Right
+err := something()
+if err != nil { ... }
+
+// Right
+val, ok := something.(string)
+if ok { ... }
+```
+
+If you modify `pkg/config.Config` or any struct referenced from it, always run `make gen-config` before finishing the task.
+
+## Comments
+
+- One sentence per line; do not wrap to a max line length
+- No trailing period on single-line comments
+- Prefer comments that explain intent, invariants, or why a branch exists
+- Avoid comments that simply restate the next line of code
+- For multi-step logic, use short section comments to separate the steps and explain why each step exists
+
+```go
+// Wrong — wrapped mid-sentence
+// This function performs the main validation logic. It checks
+// the input against the schema and returns an error if the
+// input is invalid.
+
+// Wrong — trailing period on single-line comment
+// Validate the input.
+
+// Right
+// This function performs the main validation logic
+// It checks the input against the schema and returns an error if the input is invalid
+
+// Right
+// Validate the input
+
+// Right
+// Normalize the request host so callers can pass either Host or X-Forwarded-Host values
+
+// Right
+// Browsers do not accept a cookie Domain attribute set to an IP address
+// Returning an empty domain tells the caller to set a host-only cookie instead
+
+// Wrong — restates the code
+// Trim whitespace and lowercase the host
+host = strings.TrimSpace(strings.ToLower(host))
+```
+
+## Git
+
+Do not stage or unstage changes unless the user explicitly asks you to.
+````
+
+---
+
 ## Post-Scaffold Steps
 
 After writing all files:
 
 1. Run `go mod init {{MODULE_PATH}}` to create `go.mod`.
 2. Run `go mod tidy` to resolve and download dependencies.
-3. Run `git init` if the directory is not already a git repository.
-4. Verify the project compiles with `go build ./cmd`.
-5. Run `make lint` to confirm the linter configuration works.
-6. Run `make test` to confirm tests pass (there are none yet, but the command should succeed).
+3. Register the `gen-config` tool: `go get -tool github.com/italypaleale/go-kit/tools/gen-config` (adds a `tool` directive to `go.mod`).
+4. Run `make gen-config` to produce `config.md` and `config.sample.yaml` from the `Config` struct annotations.
+5. Run `git init` if the directory is not already a git repository.
+6. Verify the project compiles with `go build ./cmd`.
+7. Run `make lint` to confirm the linter configuration works.
+8. Run `make test` to confirm tests pass (there are none yet, but the command should succeed).
+9. Run `make check-config-diff` to confirm the generated config files are in sync with the struct.
 
 ## Architecture Notes
 
@@ -1349,9 +1466,10 @@ This scaffold uses the following patterns and libraries:
 
 - **`github.com/italypaleale/go-kit`**: Shared library for config loading, observability (logs/metrics/traces), HTTP server utilities, TLS config, service lifecycle, and signal handling.
 - **Service runner pattern**: Services implement `func(ctx context.Context) error` and run via `servicerunner.NewServiceRunner`. Context cancellation triggers graceful shutdown.
-- **Configuration**: YAML-based config loaded via env var (`{{CONFIG_ENV_VAR}}`) or standard config directories (`~/.config/{{APP_NAME}}/`, `/etc/{{APP_NAME}}/`). Singleton accessed via `config.Get()`.
+- **Configuration**: YAML-based config loaded via env var (`{{CONFIG_ENV_VAR}}`) or standard config directories (`~/.config/{{APP_NAME}}/`, `/etc/{{APP_NAME}}/`). Singleton accessed via `config.Get()`. Field comments with `+default` and `+required` markers feed the `gen-config` tool, which emits `config.md` (documentation) and `config.sample.yaml` (annotated sample). CI fails if these drift from the struct (`make check-config-diff`).
 - **Observability**: OpenTelemetry for metrics and traces; `slog` for structured logging with JSON or text output. Health check endpoint at `GET /healthz`.
 - **TLS**: Automatic TLS certificate loading and hot-reloading from disk. Certificates can be provided via file path or inline PEM in config.
 - **Build info**: Version, build ID, commit hash, and build date injected at compile time via `-ldflags`.
 - **Container image**: Distroless base (`gcr.io/distroless/static-debian12:nonroot`), multi-arch (amd64, arm64, armv7).
-- **CI/CD**: GitHub Actions for linting + testing on PRs, and multi-platform build + container publish on push to main/tags.
+- **CI/CD**: GitHub Actions for linting, dependency-age check (`gomod-age`), config-diff check, and testing on PRs; multi-platform build + container publish on push to main/tags.
+- **Dependency age guard**: `gomod-age` (configured via `.gomod-age.json`) blocks CI when any non-ignored dependency is younger than the configured age threshold (default 7 days), reducing exposure to fresh supply-chain compromises.

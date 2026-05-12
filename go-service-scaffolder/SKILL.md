@@ -36,10 +36,14 @@ Database constraints when database support is requested:
 5. Run:
 - `go mod init <module-path>` (only if `go.mod` does not already exist)
 - `go mod tidy`
+- `go get -tool github.com/italypaleale/go-kit/tools/gen-config` (adds the `tool` directive used by `make gen-config`)
+- `make gen-config` to produce `config.md` and `config.sample.yaml` from the `Config` struct
 - `go test ./...`
 
 6. Initialize git only when needed:
 - Run `git init` only if the target directory is not already a git repository.
+
+Whenever `pkg/config.Config` (or any struct reachable from it) is regenerated or edited later, re-run `make gen-config` so `config.md` and `config.sample.yaml` stay in sync. CI enforces this with `make check-config-diff`.
 
 ## Reference
 
