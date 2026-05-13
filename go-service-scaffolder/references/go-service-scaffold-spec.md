@@ -1095,10 +1095,14 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: 'go.mod'
-          cache: true
+          # Do not cache in release workflows
+          cache: false
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
+        with:
+          # Do not cache in release workflows
+          cache-binary: false
 
       # Lowercase REPO_OWNER which is required for containers
       - name: Set lowercase REPO_OWNER
@@ -1338,6 +1342,8 @@ jobs:
 ```
 
 **Important note for `build-and-publish.yaml`:** The `{{version}}`, `{{major}}.{{minor}}`, and `{{major}}` inside the `tags:` block under `docker/metadata-action` are **Docker metadata-action template expressions**, NOT skill placeholders. Leave them exactly as-is. Only replace `sample-app` with `{{APP_NAME}}` and the Go module buildinfo path with `{{MODULE_PATH}}/pkg/buildinfo`.
+
+Note: in a release pipeline, which has access to the id-token, we must disable all shared caches.
 
 ---
 
