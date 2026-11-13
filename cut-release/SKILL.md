@@ -77,7 +77,7 @@ Group in this order and omit empty groups:
 3. **Fixes**
 4. **Changes**: everything else. Collapse routine upkeep into one line each ("Update third-party dependencies", "Update Go compiler version", docs, CI) instead of one line per bump.
 
-Before presenting, read the format of the latest three releases and match it:
+Before presenting, read the latest three releases for the intro style and any standing banner:
 
 ```sh
 for t in $(git -c versionsort.suffix=- tag --merged "$SHA" --list 'v[0-9]*' --sort=-v:refname | head -3); do
@@ -85,9 +85,11 @@ for t in $(git -c versionsort.suffix=- tag --merged "$SHA" --list 'v[0-9]*' --so
 done
 ```
 
-Recent notes use `## Security`, `## New features`, `## Fixes`, `## Changes` headings, `- ` bullets, and a one-line intro (small releases just say "This is a maintenance release:" followed by a short list). Use the headings and bullet style the repo actually uses now. Some repos repeat a standing banner (a blockquote about a major version or migration) in every release. If you see one, mention it and let Ale decide. Do not add or drop it yourself.
+Recent notes typically have a one-line intro (small releases just say "This is a maintenance release:" followed by a short list). Always use exactly the `## Security`, `## New features`, `## Fixes`, `## Changes` headings and `- ` bullets, even if the repo's recent releases use different conventions. Some repos repeat a standing banner (a blockquote about a major version or migration) in every release. If recent releases carry one, include it by default, copied from the latest release and placed where it appears there, and mention that you did so. Ale may tell you to drop or change it.
 
-Show Ale: the last tag, `$SHA` shortened, the range base and commit count, the grouped list (one line per item, with short hash or PR number), anything you were unsure how to classify, and how many commits you skipped and why. If the selected range is empty, report that before proposing another release. Then ask for the final notes and the release type. List what each type would produce, e.g. patch → v1.2.4, minor → v1.3.0, major → v2.0.0, pre-release → v1.3.0-rc.1. Compute stable bumps from the last stable version. Ale decides the bump. You may point out changes that look breaking (removed flags, config or API changes), but do not pick for him.
+Print the drafted release notes in the chat as Markdown, inside a fenced ```` ```markdown ```` code block so Ale can copy the raw text. Use the standard headings and `- ` bullets, one bullet per item with its short hash or PR number. Keep the block to the notes themselves; put commentary outside it.
+
+Show Ale: the last tag, `$SHA` shortened, the range base and commit count, the drafted notes (as the Markdown block above), anything you were unsure how to classify, and how many commits you skipped and why. If the selected range is empty, report that before proposing another release. Then ask for the final notes and the release type. List what each type would produce, e.g. patch → v1.2.4, minor → v1.3.0, major → v2.0.0, pre-release → v1.3.0-rc.1. Compute stable bumps from the last stable version. Ale decides the bump. You may point out changes that look breaking (removed flags, config or API changes), but do not pick for him.
 
 When promoting a pre-release, also offer its exact stable version (e.g. `v1.3.0-rc.2` → `v1.3.0`), with notes covering changes since the last stable release. For a new pre-release series, Ale chooses the target version. Use the identifier the repo already uses, and ask only if there is none. Increment the highest existing number for that target and identifier, considering local and remote tags even outside the merged history; otherwise start at `-rc.1`.
 
